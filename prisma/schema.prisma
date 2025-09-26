@@ -1,0 +1,312 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+////////////////////////////////////////////////////////////////
+
+model Users {
+  id                    Int                  @id @default(autoincrement())
+  username              String               @unique
+  email                 String               @unique
+  password              String
+  number                String? // ✅ Phone number (optional)
+  image                 String? // ✅ Profile image URL (optional)
+  jobTitle              String? // ✅ Job title (optional)
+  bio                   String? // ✅ Short bio (optional)
+  isBanned              Boolean              @default(false)
+  isVerified            Boolean              @default(false)
+  verificationCode      String?
+  codeExpiresAt         DateTime?
+  role                  Role                 @default(USER)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  session               ChatSession?
+  messages              ChatMessage[]
+  favorites             Product[]            @relation("UserFavorites")
+  cartItems             CartItem[]
+  orders                Order[]
+  rentalContract        RentalContract[]
+  customerRequests      MaintenanceRequest[] @relation("CustomerRequests")
+  technicianAssignments MaintenanceRequest[] @relation("TechnicianAssignments")
+
+  MaintenanceRequest MaintenanceRequest[]
+}
+
+enum Role {
+  USER
+  ADMIN
+  ACCOUNTANT
+  MAINTENANCE
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  RETURNED
+}
+
+enum TransactionType {
+  SALE
+  RENT
+}
+
+enum PaymentStatus {
+  SUCCESS
+  FAILED
+  PENDING
+}
+
+////////////////////////////////////////////////////////////////
+
+model Product {
+  id               Int      @id @default(autoincrement())
+  nameEn           String
+  nameAr           String
+  costPrice        Float    @default(0)
+  company          String
+  category         String
+  description      String
+  rate             Float    @default(0)
+  rentPrice        Float?
+  sellPrice        Float?
+  availableForRent Boolean  @default(false)
+  availableForSale Boolean  @default(false)
+  rentStock        Int      @default(0)
+  saleStock        Int      @default(0)
+  images           String[] // Array of image URLs
+  qrCode           String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  favoritedBy        Users[]              @relation("UserFavorites")
+  cartItems          CartItem[]
+  videos             ProductVideo[] // Better naming
+  OrderItem          OrderItem[]
+  rentalContract     RentalContract[]
+  MaintenanceRequest MaintenanceRequest[]
+}
+
+////////////////////////////////////////////////////////////////
+
+model CartItem {
+  id              Int             @id @default(autoincrement())
+  user            Users           @relation(fields: [userId], references: [id])
+  userId          Int
+  product         Product         @relation(fields: [productId], references: [id])
+  productId       Int
+  quantity        Int             @default(1)
+  transactionType TransactionType
+  addedAt         DateTime        @default(now())
+
+  @@unique([userId, productId]) // Prevent duplicate entries
+}
+
+////////////////////////////////////////////////////////////////
+
+model ProductVideo {
+  id        Int     @id @default(autoincrement())
+  name      String
+  bio       String
+  url       String
+  product   Product @relation(fields: [productId], references: [id])
+  productId Int
+
+  @@map("product_videos") // ✅ maps model to DB table
+}
+
+model Order {
+  id              Int         @id @default(autoincrement())
+  user            Users       @relation(fields: [userId], references: [id])
+  userId          Int
+  status          OrderStatus @default(PENDING)
+  totalAmount     Float
+  shippingAddress String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  items   OrderItem[]
+  payment Payment?
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id                       Int             @id @default(autoincrement())
+  order                    Order           @relation(fields: [orderId], references: [id])
+  orderId                  Int
+  product                  Product         @relation(fields: [productId], references: [id])
+  productId                Int
+  quantity                 Int
+  transactionType          TransactionType // To distinguish between SALE and RENT
+  priceAtTimeOfTransaction Float // CRUCIAL: Price of a single unit at the time of order
+  costAtTimeOfTransaction  Float?
+  extendedContractId       Int?
+  newEndDateForExtension   DateTime?
+  // Fields specific to rentals
+  rentalStartDate          DateTime?
+  rentalEndDate            DateTime?
+  returnDate               DateTime? // To mark when the item was actually returned
+  rentalContract           RentalContract?
+
+  @@map("order_items")
+}
+
+model Payment {
+  id            Int           @id @default(autoincrement())
+  order         Order         @relation(fields: [orderId], references: [id])
+  orderId       Int           @unique // An order has one payment
+  amount        Float
+  paymentMethod String // e.g., 'Credit Card', 'PayPal'
+  status        PaymentStatus @default(PENDING)
+  transactionId String? // The ID from your payment provider (e.g., Stripe)
+  createdAt     DateTime      @default(now())
+
+  @@map("payments")
+}
+
+enum RentalStatus {
+  UPCOMING // The rental period has not started yet
+  ACTIVE // The item is currently with the customer
+  COMPLETED // The item has been successfully returned on time
+  OVERDUE // The rental period has ended, but the item is not back
+  CANCELLED // The rental was cancelled before it started
+}
+
+enum AssetCondition {
+  NEW
+  GOOD
+  FAIR
+  DAMAGED
+}
+
+model RentalContract {
+  id             Int    @id @default(autoincrement())
+  contractNumber String @unique @default(cuid()) // A unique, user-facing contract ID
+
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
+  orderItemId Int       @unique // A rental OrderItem can only have ONE contract
+
+  user   Users @relation(fields: [userId], references: [id])
+  userId Int
+
+  product   Product @relation(fields: [productId], references: [id])
+  productId Int
+
+  status RentalStatus @default(UPCOMING)
+
+  startDate DateTime // The agreed-upon start of the rental
+  endDate   DateTime // The agreed-upon end of the rental
+
+  conditionOnDispatch AssetCondition? // The condition of the item when it was sent out
+  conditionOnReturn   AssetCondition? // The condition when it was returned
+  actualReturnDate    DateTime? // The date the item was actually received back
+  agreedToTermsAt     DateTime? // Timestamp of when the user agreed
+  contractDocumentUrl String? // URL to the generated PDF contract
+
+  notes String? // Admin notes about the rental (e.g., "Customer reported minor scratch")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("rental_contracts")
+}
+
+enum MaintenanceRequestStatus {
+  PENDING // User has submitted the request, awaiting admin review
+  APPROVED // Admin has approved the request and assigned a technician
+  IN_PROGRESS // The technician is actively working on the service
+  COMPLETED // The service is finished
+  CANCELLED // The request was cancelled by the user or admin
+}
+
+model MaintenanceRequest {
+  id            Int    @id @default(autoincrement())
+  requestNumber String @unique @default(cuid()) // User-facing request ID
+
+  // Who is requesting the service?
+  customer   Users @relation("CustomerRequests", fields: [customerId], references: [id])
+  customerId Int
+
+  // Who is assigned to perform the service?
+  // This is optional at first, assigned by an admin later.
+  technician   Users? @relation("TechnicianAssignments", fields: [technicianId], references: [id])
+  technicianId Int?
+
+  // What product needs maintenance? Can be one they own or rent.
+  product   Product @relation(fields: [productId], references: [id])
+  productId Int
+
+  status MaintenanceRequestStatus @default(PENDING)
+
+  // Details provided by the customer
+  issueDescription     String
+  preferredServiceDate DateTime?
+
+  // Details set by the Admin/Technician (The "Contract")
+  serviceDate     DateTime? // The actual scheduled date
+  estimatedCost   Float? // The initial quote given to the customer
+  finalCost       Float? // The final price after the service is completed
+  technicianNotes String? // Private notes from the technician
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  Users     Users?   @relation(fields: [usersId], references: [id])
+  usersId   Int?
+
+  @@map("maintenance_requests")
+}
+
+model ChatSession {
+  id        String        @id @default(cuid())
+  user      Users         @relation(fields: [userId], references: [id])
+  userId    Int           @unique // ✅ جلسة واحدة لكل مستخدم
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  messages  ChatMessage[]
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  session   ChatSession @relation(fields: [sessionId], references: [id])
+  sessionId String
+
+  // مرسل الرسالة الحقيقي (null لرسائل المساعد)
+  sender Users? @relation(fields: [userId], references: [id])
+  userId Int?
+
+  isUser    Boolean
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([userId])
+}
+
+model Advertisement {
+  id        Int      @id @default(autoincrement())
+  title     String // A headline for the ad, e.g., "Summer Rental Sale!"
+  bio       String // The main text content of the ad.
+  imageUrl  String // The URL path to the ad's image.
+  linkUrl   String? // Optional: A URL the ad links to (e.g., /products/101)
+  isActive  Boolean  @default(true) // Allows admins to enable/disable ads without deleting them.
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("advertisements")
+}
